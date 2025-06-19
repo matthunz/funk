@@ -1,3 +1,3 @@
-(\true . \x : \/ a . a . true x)
+(fn (true) (fn (x (forall (a) a)) (true x)))
 
-(/\ a . \x : a . \y : a . x)
+(forall (a) (fn (x a) (fn (y a) x)))

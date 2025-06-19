@@ -1,10 +1,11 @@
 module Funk where
 
 import Data.List
-import Funk.Parser (parseTerm)
+import Funk.Lexer (parseSExpr)
+import Funk.Parser (PError (..), parseTerm)
+import Funk.SExpr
 import Funk.Solver
 import Funk.Term
-import Funk.Token
 import Options.Applicative hiding (ParseError)
 import System.Console.ANSI
 import Text.Parsec
@@ -26,13 +27,13 @@ run = do
   case res of
     Left err -> showErrorPretty err input >>= putStrLn
     Right st -> do
-      stStr <- showSTerm st
-      putStrLn stStr
+      stExpr <- sTermToSExpr st
+      putStrLn $ sExprPretty stExpr
 
 tryRun :: String -> IO (Either Error STerm)
-tryRun input = do
-  let result = tokenize input >>= parseTerm
-  case result of
+tryRun input = case parseSExpr "<stdin>" input of
+  Left err -> return $ Left (LexerError err)
+  Right sexpr -> case parseTerm sexpr of
     Left err -> return $ Left (ParserError err)
     Right term -> do
       res <- solvePTerm term
@@ -40,10 +41,10 @@ tryRun input = do
         Left errs -> return $ Left (SolverError errs)
         Right st -> return $ Right st
 
-data Error = ParserError ParseError | SolverError [SError]
+data Error = LexerError ParseError | ParserError PError | SolverError [SError]
 
-showParseErrorPretty :: ParseError -> String -> String
-showParseErrorPretty err input =
+showLexerErrorPretty :: ParseError -> String -> String
+showLexerErrorPretty err input =
   let (msgs, unexpect, expects) =
         foldl
           ( \(m, u, e) msg' ->
@@ -81,6 +82,11 @@ showParseErrorPretty err input =
       pos' = setSourceColumn pos (sourceColumn pos + 1)
    in showErrorLine pos' input msg
 
+showParserErrorPretty :: PError -> String -> String
+showParserErrorPretty (PError msg pos) input =
+  let pos' = setSourceColumn pos (sourceColumn pos + 1)
+   in showErrorLine pos' input msg
+
 showSErrorPretty :: SError -> String -> IO String
 showSErrorPretty err input =
   case err of
@@ -95,17 +101,18 @@ showSErrorPretty err input =
           showErrorLine (locatedPos ident) input $
             "Infinite type: `" ++ unIdent (unLocated ident) ++ "`"
     UnificationError t1 t2 -> do
-      t1Str <- showSType t1
-      t2Str <- showSType t2
+      t1Expr <- sTypeToSExpr t1
+      t2Expr <- sTypeToSExpr t2
       return $
         "Unification error: cannot unify types `"
-          ++ t1Str
+          ++ sExprPretty t1Expr
           ++ "` and `"
-          ++ t2Str
+          ++ sExprPretty t2Expr
           ++ "`"
 
 showErrorPretty :: Error -> String -> IO String
-showErrorPretty (ParserError err) input = return $ showParseErrorPretty err input
+showErrorPretty (LexerError err) input = return $ showLexerErrorPretty err input
+showErrorPretty (ParserError err) input = return $ showParserErrorPretty err input
 showErrorPretty (SolverError errs) input = unlines <$> mapM (`showSErrorPretty` input) errs
 
 showErrorLine :: SourcePos -> String -> String -> String

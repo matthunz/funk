@@ -11,8 +11,8 @@ import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Funk.Parser
+import Funk.SExpr
 import Funk.Term
-import Funk.Token
 import Text.Parsec
 
 data TBinding
@@ -20,10 +20,11 @@ data TBinding
   | Skolem (Located Ident) Int
   | Unbound SourcePos Int
 
-showTBinding :: TBinding -> IO String
-showTBinding (Bound ty) = showSType ty
-showTBinding (Skolem i _) = return $ unIdent (unLocated i)
-showTBinding (Unbound _ idx) = return $ "_" ++ show idx
+tBindingToSExpr :: TBinding -> IO (SExpr String)
+tBindingToSExpr = \case
+  Bound ty -> sTypeToSExpr ty
+  Skolem i _ -> return $ SAtom (unIdent (unLocated i))
+  Unbound _ idx -> return $ SAtom ("_" ++ show idx)
 
 type STBinding = IORef TBinding
 
@@ -37,19 +38,20 @@ bindingPos ref = do
 
 type SType = Type STBinding
 
-showSType :: SType -> IO String
-showSType (TVar ref) = do
-  b <- readIORef ref
-  showTBinding b
-showSType (TArrow t1 t2) = do
-  s1 <- showSType t1
-  s2 <- showSType t2
-  return $ "(" ++ s1 ++ " -> " ++ s2 ++ ")"
-showSType (TForall ref t) = do
-  b <- readIORef ref
-  bStr <- showTBinding b
-  st <- showSType t
-  return $ "(\\/ " ++ bStr ++ " . " ++ st ++ ")"
+sTypeToSExpr :: SType -> IO (SExpr String)
+sTypeToSExpr = \case
+  TVar ref -> do
+    b <- readIORef ref
+    tBindingToSExpr b
+  TArrow t1 t2 -> do
+    s1 <- sTypeToSExpr t1
+    s2 <- sTypeToSExpr t2
+    return $ SGroup [SAtom "fn", s1, s2]
+  TForall ref t -> do
+    b <- readIORef ref
+    bExpr <- tBindingToSExpr b
+    body <- sTypeToSExpr t
+    return $ SGroup [SAtom "forall", bExpr, body]
 
 typePos :: SType -> IO SourcePos
 typePos (TVar ref) = do
@@ -85,36 +87,38 @@ instance Binding SBinding where
 
 type STerm = Term SBinding
 
-showSTerm :: STerm -> IO String
-showSTerm (Var _ ref) = do
-  v <- readIORef (unSBinding ref)
-  case v of
-    VBound t -> showSTerm t
-    VUnbound i -> return $ unIdent (unLocated i)
-showSTerm (Lam ty ref _ body) = do
-  v <- readIORef (unSBinding ref)
-  bodyStr <- showSTerm body
-  tyBinding <- readIORef $ sLamInput ty
-  tyStr <- showTBinding tyBinding
-  case v of
-    VBound t -> do
-      tStr <- showSTerm t
-      return $ "(\\ " ++ tStr ++ " : " ++ tyStr ++ " . " ++ bodyStr ++ ")"
-    VUnbound i ->
-      return $ "(\\ " ++ unIdent (unLocated i) ++ " : " ++ tyStr ++ " . " ++ bodyStr ++ ")"
-showSTerm (App _ t1 t2) = do
-  s1 <- showSTerm t1
-  s2 <- showSTerm t2
-  return $ "(" ++ s1 ++ " " ++ s2 ++ ")"
-showSTerm (TyLam _ ref body) = do
-  b <- readIORef ref
-  bStr <- showTBinding b
-  bodyStr <- showSTerm body
-  return $ "(/\\ " ++ bStr ++ " . " ++ bodyStr ++ ")"
-showSTerm (TyApp _ t ty) = do
-  s <- showSTerm t
-  tyStr <- showSType ty
-  return $ "(" ++ s ++ " [" ++ tyStr ++ "])"
+sTermToSExpr :: STerm -> IO (SExpr String)
+sTermToSExpr = \case
+  Var _ ref -> do
+    v <- readIORef (unSBinding ref)
+    case v of
+      VBound t -> sTermToSExpr t
+      VUnbound i -> return $ SAtom (unIdent (unLocated i))
+  Lam ty ref _ body -> do
+    v <- readIORef (unSBinding ref)
+    bodyExpr <- sTermToSExpr body
+    tyBinding <- readIORef $ sLamInput ty
+    tyStr <- tBindingToSExpr tyBinding
+    tyExprs <- case v of
+      VBound t -> do
+        tExpr <- sTermToSExpr t
+        return [tExpr, tyStr]
+      VUnbound i ->
+        return [SAtom (unIdent (unLocated i)), tyStr]
+    return $ SGroup [SAtom "fn", SGroup tyExprs, bodyExpr]
+  App _ t1 t2 -> do
+    s1 <- sTermToSExpr t1
+    s2 <- sTermToSExpr t2
+    return $ SGroup [s1, s2]
+  TyLam _ ref body -> do
+    b <- readIORef ref
+    bStr <- tBindingToSExpr b
+    bodyExpr <- sTermToSExpr body
+    return $ SGroup [SAtom "forall", bStr, bodyExpr]
+  TyApp _ t ty -> do
+    s <- sTermToSExpr t
+    tyStr <- sTypeToSExpr ty
+    return $ SGroup [s, tyStr]
 
 data Env = Env
   { envVars :: Map Ident SBinding,

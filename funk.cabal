@@ -12,9 +12,10 @@ library
     exposed-modules:
         Funk
         Funk.Parser
+        Funk.SExpr
+        Funk.Lexer
         Funk.Solver
         Funk.Term
-        Funk.Token
 
     hs-source-dirs:   src
     default-language: Haskell2010
