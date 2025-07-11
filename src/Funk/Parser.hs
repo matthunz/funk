@@ -58,7 +58,7 @@ parensType = tok TokLParen *> typeExpr <* tok TokRParen
 forallType :: Parser PType
 forallType = do
   tok TokForall
-  vars <- sepBy1 (fmap Ident <$> identTok) (tok TokComma)
+  vars <- many1 (fmap Ident <$> identTok)
   tok TokDot
   body <- typeExpr
   return $ foldr TForall body vars
@@ -71,8 +71,20 @@ atomicType =
       parensType
     ]
 
+typeAppExpr :: Parser PType
+typeAppExpr = do
+  t0 <- atomicType
+  rest t0
+  where
+    rest t =
+      ( do
+          arg <- atomicType
+          rest (TApp t arg)
+      )
+        <|> return t
+
 typeExpr :: Parser PType
-typeExpr = chainr1 atomicType (tok TokArrow $> TArrow)
+typeExpr = chainr1 typeAppExpr (tok TokArrow $> TArrow)
 
 varExpr :: Parser PExpr
 varExpr = Var () . PBinding . fmap Ident <$> identTok
@@ -93,17 +105,16 @@ lambdaExpr = do
       return $ foldr (\v acc -> TyApp pos acc (TVar v)) body vars
     )
     <|> ( do
-          -- Term abstraction
-          Located pos' s <- identTok
-          let v = PBinding $ Located pos' (Ident s)
-          ty <- optionMaybe (tok TokColon *> typeExpr)
-          tok TokDot
-          Lam pos v ty <$> expr
+            -- Term abstraction
+            Located pos' s <- identTok
+            let v = PBinding $ Located pos' (Ident s)
+            ty <- optionMaybe (tok TokColon *> typeExpr)
+            tok TokDot
+            Lam pos v ty <$> expr
         )
 
 recordCreationExprDebug :: Parser PExpr
 recordCreationExprDebug = do
-  pos <- getPosition
   constructorName <- fmap Ident <$> identTok <?> "constructor name"
   tok TokLBrace <?> "opening brace"
   fields <-
@@ -151,6 +162,7 @@ appExpr = do
 
 letStmt :: Parser PStmt
 letStmt = do
+  tok TokLet
   v <- fmap (PBinding . fmap Ident) identTok
   ty <- optionMaybe (tok TokColon *> typeExpr)
   tok TokEq
@@ -166,7 +178,7 @@ typeStmt = do
   return $ Type v ty
 
 stmt :: Parser PStmt
-stmt = choice [try letStmt, try typeStmt, try dataStmt]
+stmt = choice [try letStmt, try typeStmt, try dataStmt, try traitStmt, try implStmt]
 
 -- Updated dataStmt to handle forall syntax
 dataStmt :: Parser PStmt
@@ -177,7 +189,7 @@ dataStmt = do
   -- Handle optional forall quantification
   mbForallPart <- optionMaybe $ do
     tok TokForall
-    vars <- sepBy1 (fmap Ident <$> identTok) (tok TokComma)
+    vars <- many1 (fmap Ident <$> identTok)
     tok TokDot
     return vars
   -- Parse the record type
@@ -196,6 +208,44 @@ dataStmt = do
     Nothing -> return $ Data v fields
     Just vars -> return $ DataForall v vars fields
 
+traitStmt :: Parser PStmt
+traitStmt = do
+  tok TokTrait
+  v <- fmap Ident <$> identTok
+  vars <- many (fmap Ident <$> identTok)
+  tok TokLBrace
+  methods <-
+    sepBy
+      ( do
+          method <- fmap Ident <$> identTok
+          tok TokColon
+          ty <- typeExpr
+          return (unLocated method, ty)
+      )
+      (tok TokComma)
+  tok TokRBrace
+  return $ Trait v vars methods
+
+implStmt :: Parser PStmt
+implStmt = do
+  tok TokImpl
+  traitName <- fmap Ident <$> identTok
+  vars <- many (fmap Ident <$> identTok)
+  tok TokFor
+  targetType <- typeExpr
+  tok TokLBrace
+  methods <-
+    sepBy
+      ( do
+          method <- fmap Ident <$> identTok
+          tok TokColon
+          e <- expr
+          return (unLocated method, e)
+      )
+      (tok TokComma)
+  tok TokRBrace
+  return $ Impl traitName vars targetType methods
+
 recordLiteral :: Parser [(Ident, PExpr)]
 recordLiteral = do
   tok TokLBrace
@@ -213,7 +263,6 @@ recordLiteral = do
 
 recordCreationExpr :: Parser PExpr
 recordCreationExpr = do
-  pos <- getPosition
   constructorName <- fmap Ident <$> identTok
   tok TokLBrace
   fields <-
@@ -231,7 +280,6 @@ recordCreationExpr = do
 
 recordCreationExpr' :: Parser PExpr
 recordCreationExpr' = do
-  pos <- getPosition
   constructorName <- fmap Ident <$> identTok
   tok TokLBrace
   fields <- fieldList
