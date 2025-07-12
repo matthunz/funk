@@ -54,6 +54,11 @@ tryRun input = do
 
 data Error = ParserError ParseError | SubstError [Located Ident] | SolverError [SError]
 
+instance Show Error where
+  show (ParserError _) = "Parse Error"
+  show (SubstError _) = "Substitution Error"
+  show (SolverError _) = "Solver Error"
+
 showParseErrorPretty :: ParseError -> String -> String
 showParseErrorPretty err input =
   let (msgs, unexpect, expects) =
