@@ -212,9 +212,24 @@ prettifyStmt (Impl traitName vars ty methods) =
     formatVars [] = ""
     formatVars vars = "forall " ++ intercalate " " (map prettifyTypeVar vars) ++ " . "
     formatMethods [] = ""
-    formatMethods [method] = formatMethod method
-    formatMethods methods = intercalate ", " (map formatMethod methods)
-    formatMethod (Ident name, expr) = name ++ " = " ++ prettifyExpr expr
+    formatMethods [method] = 
+      let formatted = formatMethod method
+      in if isComplexMethod formatted then "\n  " ++ formatted ++ "\n" else formatted
+    formatMethods methods = 
+      let formattedMethods = map formatMethod methods
+          hasComplexMethod = any isComplexMethod formattedMethods
+      in if hasComplexMethod
+         then "\n  " ++ intercalate ",\n  " formattedMethods ++ "\n"
+         else intercalate ", " formattedMethods
+    formatMethod (Ident name, expr) = 
+      let exprStr = prettifyExpr expr
+      in name ++ " = " ++ exprStr
+    -- Check if a method is complex enough to warrant line splitting
+    isComplexMethod formatted = 
+      length formatted > 60 || -- Long methods
+      '\n' `elem` formatted ||  -- Already contains newlines
+      countWords formatted > 8  -- Many terms
+    countWords = length . words
 prettifyStmt (DataForall name vars fields) =
   "data " ++ prettifyTypeVar name ++ " " ++ intercalate " " (map prettifyTypeVar vars) ++ " = {" ++ formatFields fields ++ "}"
   where
@@ -291,9 +306,28 @@ prettifyExpr (RecordType _ _ fields) =
   where
     showField (Ident name, _) = name
 prettifyExpr (RecordCreation _ expr fields) =
-  prettifyExpr expr ++ " {" ++ intercalate ", " (map showField fields) ++ "}"
+  let formattedFields = map showField fields
+      hasComplexField = any isComplexField formattedFields
+      exprStr = prettifyExpr expr
+  in if hasComplexField
+     then exprStr ++ " {\n    " ++ intercalate ",\n    " formattedFields ++ "\n  }"
+     else exprStr ++ " {" ++ intercalate ", " formattedFields ++ "}"
   where
-    showField (Ident name, fieldExpr) = name ++ " = " ++ prettifyExpr fieldExpr
+    showField (Ident name, fieldExpr) = 
+      let exprStr = prettifyExpr fieldExpr
+          -- If the expression contains newlines, indent them properly
+          indentedExpr = if '\n' `elem` exprStr
+                        then case lines exprStr of
+                               [] -> exprStr
+                               (firstLine:restLines) -> 
+                                 let indentedRest = map ("  " ++) restLines
+                                 in unlines (firstLine : indentedRest)
+                        else exprStr
+      in name ++ " = " ++ indentedExpr
+    isComplexField formatted = 
+      length formatted > 40 || 
+      '\n' `elem` formatted ||
+      length (words formatted) > 6
 prettifyExpr (TraitMethod _ _ _ _ (Ident name)) = name
 prettifyExpr (PrimUnit _) = "#Unit"
 prettifyExpr (PrimString _ s) = show s
@@ -303,10 +337,26 @@ prettifyExpr (PrimFalse _) = "#false"
 prettifyExpr (PrimNil _ _) = "#Nil"
 prettifyExpr (PrimCons _ _ headExpr tailExpr) = "#Cons " ++ prettifyExprAsArg headExpr ++ " " ++ prettifyExprAsArg tailExpr
 prettifyExpr (PrimPrint _ arg) = "#print " ++ prettifyExprAsArg arg
-prettifyExpr (PrimFmapIO _ func io) = "#fmapIO " ++ prettifyExprAsArg func ++ " " ++ prettifyExprAsArg io
+prettifyExpr (PrimFmapIO _ func io) = 
+  let funcStr = prettifyExprAsArg func
+      ioStr = prettifyExprAsArg io
+      -- Only break lines for very complex expressions
+      needsMultiLine = (length funcStr > 60 || length ioStr > 60) && 
+                      ('\n' `elem` funcStr || '\n' `elem` ioStr)
+  in if needsMultiLine
+     then "#fmapIO\n  " ++ funcStr ++ "\n  " ++ ioStr
+     else "#fmapIO " ++ funcStr ++ " " ++ ioStr
 prettifyExpr (PrimPureIO _ arg) = "#pureIO " ++ prettifyExprAsArg arg
 prettifyExpr (PrimApplyIO _ func io) = "#applyIO " ++ prettifyExprAsArg func ++ " " ++ prettifyExprAsArg io
-prettifyExpr (PrimBindIO _ io func) = "#bindIO " ++ prettifyExprAsArg io ++ " " ++ prettifyExprAsArg func
+prettifyExpr (PrimBindIO _ io func) = 
+  let ioStr = prettifyExprAsArg io
+      funcStr = prettifyExprAsArg func
+      -- Only break lines for very complex expressions
+      needsMultiLine = (length ioStr > 60 || length funcStr > 60) && 
+                      ('\n' `elem` ioStr || '\n' `elem` funcStr)
+  in if needsMultiLine
+     then "#bindIO\n  " ++ ioStr ++ "\n  " ++ funcStr
+     else "#bindIO " ++ ioStr ++ " " ++ funcStr
 prettifyExpr (PrimIntEq _ left right) = "#intEq " ++ prettifyExprAsArg left ++ " " ++ prettifyExprAsArg right
 prettifyExpr (PrimStringEq _ left right) = "#stringEq " ++ prettifyExprAsArg left ++ " " ++ prettifyExprAsArg right
 prettifyExpr (PrimStringConcat _ left right) = "#stringConcat " ++ prettifyExprAsArg left ++ " " ++ prettifyExprAsArg right
@@ -365,6 +415,15 @@ prettifyExprWithParens expr =
   if needsParensAsArg expr
   then "(" ++ prettifyExpr expr ++ ")"
   else prettifyExpr expr
+
+-- Expression formatting with proper indentation for complex expressions
+prettifyExprWithIndent :: Int -> Expr PBinding -> String
+prettifyExprWithIndent indent expr = 
+  let result = prettifyExpr expr
+      indentStr = replicate indent ' '
+  in if '\n' `elem` result
+     then unlines $ map (indentStr ++) $ lines result
+     else result
 
 -- Helper function for adding parentheses in function argument context  
 prettifyExprAsArg :: Expr PBinding -> String
